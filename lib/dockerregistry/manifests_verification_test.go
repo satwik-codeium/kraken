@@ -26,7 +26,7 @@ import (
 
 // buildDriverWithVerification sets up a storage driver, backing transferer state,
 // and returns a manifest tag path that will trigger manifest download + verify.
-func buildDriverWithVerification(t *testing.T, decision SignatureVerificationDecision, retErr error, called *bool) (*KrakenStorageDriver, string, string) {
+func buildDriverWithVerification(t *testing.T, decision SignatureVerificationDecision, retErr error, called *bool) (*KrakenStorageDriver, string, tally.TestScope) {
 	t.Helper()
 
 	// Create CA store + transferer
@@ -66,7 +66,7 @@ func buildDriverWithVerification(t *testing.T, decision SignatureVerificationDec
 
 	// Path that triggers manifests.getDigest → verify
 	path := genManifestTagCurrentLinkPath(repo, tag, manifestDigest.Hex())
-	return sd, path, ""
+	return sd, path, stats
 }
 
 func TestVerification_Allow(t *testing.T) {
@@ -110,4 +110,79 @@ func TestVerification_Error(t *testing.T) {
 	require.NoError(t, err)
 	require.Greater(t, len(data), 0)
 	require.True(t, called, "verification should be called")
+}
+
+func TestVerification_MetricsIntegration(t *testing.T) {
+	var called bool
+	sd, path, stats := buildDriverWithVerification(t, DecisionAllow, nil, &called)
+
+	data, err := sd.GetContent(contextFixture(), path)
+	require.NoError(t, err)
+	require.Greater(t, len(data), 0)
+	require.True(t, called, "verification should be called")
+
+	counters := stats.Snapshot().Counters()
+	require.Equal(t, 1, len(counters), "expected exactly one counter to be recorded")
+	
+	var successCounter tally.CounterSnapshot
+	found := false
+	for _, counter := range counters {
+		if counter.Name() == signatureVerificationSuccessCounter {
+			successCounter = counter
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "signature_verification_success counter should be present")
+	require.Equal(t, int64(1), successCounter.Value(), "signature_verification_success counter should be incremented once")
+}
+
+func TestVerification_MetricsIntegration_Failure(t *testing.T) {
+	var called bool
+	sd, path, stats := buildDriverWithVerification(t, DecisionDeny, nil, &called)
+
+	data, err := sd.GetContent(contextFixture(), path)
+	require.NoError(t, err)
+	require.Greater(t, len(data), 0)
+	require.True(t, called, "verification should be called")
+
+	counters := stats.Snapshot().Counters()
+	require.Equal(t, 1, len(counters), "expected exactly one counter to be recorded")
+	
+	var failureCounter tally.CounterSnapshot
+	found := false
+	for _, counter := range counters {
+		if counter.Name() == signatureVerificationFailureCounter {
+			failureCounter = counter
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "signature_verification_failure counter should be present")
+	require.Equal(t, int64(1), failureCounter.Value(), "signature_verification_failure counter should be incremented once")
+}
+
+func TestVerification_MetricsIntegration_Error(t *testing.T) {
+	var called bool
+	sd, path, stats := buildDriverWithVerification(t, DecisionAllow /*unused*/, fmt.Errorf("verification error"), &called)
+
+	data, err := sd.GetContent(contextFixture(), path)
+	require.NoError(t, err) // Current behavior: errors don't block manifest download
+	require.Greater(t, len(data), 0)
+	require.True(t, called, "verification should be called")
+
+	counters := stats.Snapshot().Counters()
+	require.Equal(t, 1, len(counters), "expected exactly one counter to be recorded")
+	
+	var errorCounter tally.CounterSnapshot
+	found := false
+	for _, counter := range counters {
+		if counter.Name() == signatureVerificationErrorCounter {
+			errorCounter = counter
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "signature_verification_error counter should be present")
+	require.Equal(t, int64(1), errorCounter.Value(), "signature_verification_error counter should be incremented once")
 }
