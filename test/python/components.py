@@ -516,6 +516,10 @@ class Agent(Component):
         res = s.get(url, stream=True, timeout=60)
         res.raise_for_status()
 
+    @property
+    def server_port(self):
+        return self.port
+
 
 class AgentFactory(object):
 
